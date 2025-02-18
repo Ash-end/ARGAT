@@ -96,14 +96,14 @@ def process_data(file_path, n_components=40): #n_components is the number of gra
 
 
 # Processing the training set
-train_data_path = 'D:/documents/GNNTEST/dataset/train/30_train.npy'
+train_data_path = 'xxx'
 train_processed = process_data(train_data_path, n_components=40)
-np.save('D:/documents/GNNTEST/dataset/train/cc_30_train_processed.npy', train_processed)
+np.save('xxx', train_processed)
 
 #  Processing the test dataset
-test_data_path = 'D:/documents/GNNTEST/dataset/test/30_test_015db.npy'
+test_data_path = 'xxx'
 test_processed = process_data(test_data_path, n_components=40)
-np.save('D:/documents/GNNTEST/dataset/test/cc_30_test_processed_015db.npy', test_processed)
+np.save('xxx', test_processed)
 
 print("The adjacency matrix is calculated and saved into a new .npy file！")
 
