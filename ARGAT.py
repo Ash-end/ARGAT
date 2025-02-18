@@ -17,8 +17,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 # Setting the Path
 train_path = "xxx" # Path to the training dataset
 test_path = "xxx"
-train_dataset = "xxx" # filename
-test_dataset = "xxx"
+train_dataset = "xxx..." # filename
+test_dataset = "xxx..."
 np.random.seed(400)
 
 n_features = 512
