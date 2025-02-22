@@ -3,22 +3,30 @@ import torch
 import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
 import torch.nn as nn
+import torch.optim as optim
 from LoadTrainData import LoadTrainData
 from LoadTestData import LoadTestData
+from LoadvaliData import LoadvaliData
 from DataGenerator import DataGenerator
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
+from torch.autograd import Variable
+from torch_optimizer import RAdam
 import seaborn as sns
+import torch_geometric
 from torch_geometric.data import Data, Batch
 from torch_geometric.nn import GATConv
 from torch.optim import AdamW
+from torch_optimizer import Lamb
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-# Setting the Path
-train_path = "xxx" # Path to the training dataset
+# set the path
+train_path = "xxx"
 test_path = "xxx"
-train_dataset = "xxx..." # filename
-test_dataset = "xxx..."
+vali_path = "xxx"  # file path of validation dataset
+train_dataset = "xxx"
+test_dataset = "xxx"
+vali_dataset = "xxx"  # dataset name of validation dataset, .npy file
 np.random.seed(400)
 
 n_features = 512
@@ -27,21 +35,23 @@ early_stop_patience = 5
 weight_decay = 1e-4
 learning_rate = 0.00001
 batch_size = 64
-
-# Loading training and testing data
+# load training, validation and test data
 tx, ty, ta = LoadTestData(test_path, test_dataset)
 print('tx', tx.shape)
-X_a, A_a = LoadTrainData(train_path, train_dataset)
-num_nodes = tx.shape[1]
+x_name, a_name = LoadTrainData(train_path, train_dataset)
+val_x, val_y, val_a = LoadvaliData(vali_path, vali_dataset)  # v
+num_nodes = 40
 
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 tx = tx.to(device)
 ty = ty.to(device)
 ta = ta.to(device)
+val_x = val_x.to(device)
+val_y = val_y.to(device)
+val_a = val_a.to(device)
 
-
-# Defining the model class
+# define layer class
 class GConvolution(nn.Module):
     def __init__(self, in_features, num_nodes, out_features, bias: float = 0.0):
         super(GConvolution, self).__init__()
@@ -104,7 +114,8 @@ class TConvolution(nn.Module):
         else:
             return outputs
 
-#Building the ARGAT model
+
+
 class ARGAT(nn.Module):
     def __init__(self, seq_len, num_nodes, f_out, gat_out_size, num_heads, out_size):
         super(ARGAT, self).__init__()
@@ -114,15 +125,16 @@ class ARGAT(nn.Module):
         self._num_nodes = num_nodes
         self.gat_out_size = gat_out_size
         self.num_heads = num_heads
+
+
         self.gcn1 = GConvolution(seq_len, num_nodes, f_out)
         self.gat1 = GATConv(f_out, gat_out_size, heads=num_heads, concat=True, dropout=0.5)
-        # Dropout layer
         self.dropout = nn.Dropout(p=0.50)
-        self.Tcn1 = TConvolution(gat_out_size * num_heads, num_nodes, out_size)
+        self.tcn1 = TConvolution(gat_out_size * num_heads, num_nodes, out_size)
 
 
         self.flatten = nn.Flatten()
-        self.fc = nn.Linear(2048, 512)  # Note the dimension here
+        self.fc = nn.Linear(2048, 512)  # note the dimension here
         self.fc1 = nn.Linear(512, 128)
         self.fc2 = nn.Linear(128, 7)
 
@@ -131,25 +143,25 @@ class ARGAT(nn.Module):
 
         G1 = self.dropout(G1)
 
-        # The input of the GAT layer should be (batch_size, num_nodes, f_out)
-        G1 = G1.permute(0, 2, 1)  # Transform the dimensions to (batch_size, num_nodes, f_out)
+        #  the input of the GAT layer should be (batch_size, num_nodes, f_out)
+        G1 = G1.permute(0, 2, 1)  # change the dimension to  (batch_size, num_nodes, f_out)
 
-        # Convert to torch_geometric Data object
+        # change to be  torch_geometric Data
         data_list = []
         for i in range(G1.size(0)):
-            edge_index = adj[i].nonzero(as_tuple=False).t().contiguous()  # Get edge_index of [2, num_edges]
+            edge_index = adj[i].nonzero(as_tuple=False).t().contiguous()  # get the edge_index [2, num_edges]
             data = Data(x=G1[i], edge_index=edge_index)
             data_list.append(data)
         batch = Batch.from_data_list(data_list)
 
         G2 = F.elu(self.gat1(batch.x, batch.edge_index))
-        G2 = G2.view(-1, self._num_nodes, self.gat_out_size * self.num_heads)  # Adjust dimensions
+        G2 = G2.view(-1, self._num_nodes, self.gat_out_size * self.num_heads)  # change the dimension
         G2 = self.dropout(G2)
 
-        # Restore the dimensions to (batch_size, gat_out_size * num_heads, num_nodes)
-        G2 = G2.permute(0, 2, 1)  # Swap dimensions to accommodate subsequent operations
+        # the input of the TConvolution layer should be (batch_size, num_nodes, f_out)
+        G2 = G2.permute(0, 2, 1)  # change the dimension
 
-        T1 = F.tanh(self.Tcn1(G2, adj))
+        T1 = F.tanh(self.tcn1(G2, adj))
         T1 = self.dropout(T1)
 
         s = torch.reshape(T1, (T1.size(0), -1))
@@ -164,19 +176,21 @@ class ARGAT(nn.Module):
         return F.log_softmax(out, dim=1)
 
 
-
-model = ARGAT(512, 40, 256,32, num_heads=4, out_size=16)
+# initialize the model
+model = ARGAT(512, 40, 256, 32, num_heads=4, out_size=16)# note the dimension here
 model = model.to(device)
+
 criterion = nn.CrossEntropyLoss(reduction='none').to(device)
 optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
+
 torch.cuda.empty_cache()
 best_val_acc = 0
 patience_counter = 0
 
-# Use generator_data to generate the entire training dataset
+
 train_x, train_y, train_adjs = [], [], []
-for x, y, adjs in DataGenerator(train_path, train_dataset, batch_size, X_a, A_a):
+for x, y, adjs in DataGenerator(train_path, train_dataset, batch_size, x_name, a_name):
     train_x.append(x)
     train_y.append(y)
     train_adjs.append(adjs)
@@ -215,22 +229,21 @@ for epoch in range(epochs):
     train_loss_history.append(train_loss)
     train_acc = correct / len(train_loader.dataset)
 
+    # evaluate the model on the validation set
     model.eval()
     with torch.no_grad():
-        output = model(tx, ta)
-        val_loss = criterion(output, ty).mean().item()
+        val_output = model(val_x, val_a)
+        output = model(val_x, val_a)
+        val_loss = criterion(output, val_y).mean().item()
         val_loss_history.append(val_loss)
         _, predicted = torch.max(output, 1)
-        correct = (predicted == ty).sum().item()
-        val_acc = correct / ty.size(0)
+        correct = (predicted == val_y).sum().item()
+        val_acc = correct / val_y.size(0)
         val_acc_history.append(val_acc)
 
     print(
         f'Epoch: {epoch + 1}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}')
-
-    # Using a scheduler to adjust the learning rate
     scheduler.step(val_loss)
-
     if val_acc > best_val_acc:
         best_val_acc = val_acc
         patience_counter = 0
@@ -242,7 +255,7 @@ for epoch in range(epochs):
         print("Early stopping...")
         break
 
-# Load the best model and evaluate it on the test set
+# evaluate the model on the test set
 model.load_state_dict(torch.load('best_model.pth'))
 model.eval()
 
@@ -255,7 +268,7 @@ with torch.no_grad():
 
     print(f'Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}')
 
-# Plot the loss and accuracy history
+# plot the loss and accuracy history
 plt.figure(figsize=(12, 6))
 
 plt.subplot(1, 2, 1)
@@ -279,7 +292,7 @@ plt.show()
 
 labels = ['PD', 'BPSK', 'CW', 'LFMPC', 'SFMW', 'SINFM', 'TRIFM']
 
-# Create a confusion matrix
+
 cm = confusion_matrix(ty.cpu().numpy(), test_predicted.cpu().numpy())
 
 
